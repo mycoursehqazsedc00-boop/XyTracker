@@ -70,11 +70,9 @@ so the addon keeps working for people who don't have it installed.
 
 ## Installation
 
-1. Copy the `XyTracker` folder (containing `XyTracker.lua`,
-   `XyTracker.xml`, `XyTracker.toc`) into `Interface/AddOns/`.
-2. (Optional, recommended) Install [ClassicAPI v1.12.7](https://github.com/brues-code/ClassicAPI/releases/tag/v1.12.7)
+1.(Optional, recommended) Install [ClassicAPI v1.12.7](https://github.com/brues-code/ClassicAPI/releases/tag/v1.12.7)
    for the improved tooltips described above.
-3. Restart the client (or `/reload`) and enable **XyTracker** on the
+2. Restart the client (or `/reload`) and enable **XyTracker** on the
    AddOns screen.
 
 ## Usage
