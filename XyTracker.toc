@@ -1,0 +1,7 @@
+## Interface: 11200
+## Title: |cff33ffcc[Raid Tool]|cffffffff SR Tracker
+## Version: 3.1
+## Author: 无道暴君、宇然、天乖乖、最爱
+## Notes: Tracks SR and DKP. In raid chat type: XY [space] [itemlink] to submit SR. v3.1: hoverable item tooltips on the SR list, locale-independent raid join/leave refresh.
+## SavedVariables: XyArray, DefaultDKP, XyTrackerOptions
+XyTracker.xml
