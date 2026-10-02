@@ -488,9 +488,16 @@ function XyTracker_UpdateList()
     local currentRaidMembers = {}
 
     if totalMembers then
-        -- Build member lookup table
+        -- Build member lookup table.
+        -- [FIX] GetRaidRosterInfo(i) can transiently return nil for a slot
+        -- while the roster is still settling (common pre-raid, with people
+        -- joining/leaving in quick succession) even though i <= totalMembers.
+        -- Skip those instead of indexing the table with a nil key.
         for i = 1, totalMembers do
-            currentRaidMembers[GetRaidRosterInfo(i)] = true
+            local rname = GetRaidRosterInfo(i)
+            if rname then
+                currentRaidMembers[rname] = true
+            end
         end
 
         -- Build name-to-index map for fast lookups
@@ -505,25 +512,28 @@ function XyTracker_UpdateList()
             -- text that was localized on a Chinese leader's client (or
             -- vice versa) via the XY_SYNC payload. See ClassDisplayName().
             local name, rank, subgroup, level, class, fileName = GetRaidRosterInfo(i);
-            local classToken = fileName or class
-            local info
 
-            if nameToIndex[name] then
-                info = XyArray[nameToIndex[name]]
-                info["class"] = classToken  -- keep it current / self-heal old contaminated data
-            else
-                -- New player, add record
-                info = { name = name, class = classToken, xy = "---NOSR---", dkp = DefaultDKP }
-                table.insert(XyArray, info)
-                nameToIndex[name] = getn(XyArray)
-            end
+            if name then  -- [FIX] same transient-nil-slot guard as above
+                local classToken = fileName or class
+                local info
 
-            if info then
-                if IsLeader and NewDKP then info["dkp"] = DefaultDKP end
-                if info["xy"] and info["xy"] ~= "---NOSR---" and info["xy"] ~= "" then
-                    Xys = Xys + 1
+                if nameToIndex[name] then
+                    info = XyArray[nameToIndex[name]]
+                    info["class"] = classToken  -- keep it current / self-heal old contaminated data
                 else
-                    NoXyList = NoXyList .. name .. " "
+                    -- New player, add record
+                    info = { name = name, class = classToken, xy = "---NOSR---", dkp = DefaultDKP }
+                    table.insert(XyArray, info)
+                    nameToIndex[name] = getn(XyArray)
+                end
+
+                if info then
+                    if IsLeader and NewDKP then info["dkp"] = DefaultDKP end
+                    if info["xy"] and info["xy"] ~= "---NOSR---" and info["xy"] ~= "" then
+                        Xys = Xys + 1
+                    else
+                        NoXyList = NoXyList .. name .. " "
+                    end
                 end
             end
         end
@@ -1074,9 +1084,11 @@ function XyTracker_DoActualClear()
     if totalMembers then
         for i = 1, totalMembers do
             local name, rank, subgroup, level, class, fileName = GetRaidRosterInfo(i);
-            info = { name = name, class = fileName or class, dkp = 4, xy = "---NOSR---" }
-            table.insert(XyArray, info)
-            NoXyList = NoXyList .. name .. " "
+            if name then  -- [FIX] skip a transiently-nil roster slot instead of inserting a nil-named record
+                info = { name = name, class = fileName or class, dkp = 4, xy = "---NOSR---" }
+                table.insert(XyArray, info)
+                NoXyList = NoXyList .. name .. " "
+            end
         end
     end
     XyTracker_UpdateList()
@@ -1096,11 +1108,13 @@ function XyTracker_OnRefreshButtonClick()
         -- Ensure all current raid members have a record
         for i = 1, totalMembers do
             local name, rank, subgroup, level, class, fileName = GetRaidRosterInfo(i)
-            local classToken = fileName or class
-            if existingWishes[name] then
-                XyArray[existingWishes[name].index]["class"] = classToken  -- Update class
-            else
-                table.insert(XyArray, { name = name, class = classToken, xy = "---NOSR---", dkp = DefaultDKP or 4 })
+            if name then  -- [FIX] skip a transiently-nil roster slot instead of inserting a nil-named record
+                local classToken = fileName or class
+                if existingWishes[name] then
+                    XyArray[existingWishes[name].index]["class"] = classToken  -- Update class
+                else
+                    table.insert(XyArray, { name = name, class = classToken, xy = "---NOSR---", dkp = DefaultDKP or 4 })
+                end
             end
         end
 
@@ -1132,7 +1146,10 @@ if not IsLeader then return end
     local currentRaidMembers = {}
 
     if totalMembers then
-        for i = 1, totalMembers do currentRaidMembers[GetRaidRosterInfo(i)] = true end
+        for i = 1, totalMembers do
+            local rname = GetRaidRosterInfo(i)
+            if rname then currentRaidMembers[rname] = true end
+        end
 
         XyBroadcastList = {}
         for i = 1, getn(XyArray) do
@@ -1183,7 +1200,10 @@ function XyTracker_OnExportButtonClick()
     local displayArray       = {}
 
     if totalMembers then
-        for i = 1, totalMembers do currentRaidMembers[GetRaidRosterInfo(i)] = true end
+        for i = 1, totalMembers do
+            local rname = GetRaidRosterInfo(i)
+            if rname then currentRaidMembers[rname] = true end
+        end
         for i = 1, getn(XyArray) do
             if currentRaidMembers[XyArray[i]["name"]] then
                 table.insert(displayArray, XyArray[i])
