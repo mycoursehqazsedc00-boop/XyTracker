@@ -1264,15 +1264,28 @@ function Xy_SortDkp()
     table.sort(XyArray, Xy_CompareDkps);
 end
 
+-- [FIX] The old `(way=="asc") and (c1<c2) or (c1>c2)` idiom breaks when
+-- `c1<c2` is false: Lua's `and/or` falls through to `(c1>c2)` regardless of
+-- `way`, so an ascending sort returned true for BOTH c1<c2 and c1>c2 pairs.
+-- That's not a valid strict ordering, and table.sort's quicksort can walk
+-- off the end of the array when fed one -- which is what the "attempt to
+-- index a2 (a nil value)" crash on column-header click actually was.
 function Xy_CompareDkps(a1, a2)
     local method = Xy_SortOptions["method"]
     local way    = Xy_SortOptions["itemway"]
     local c1, c2 = a1[method], a2[method]
-    if method == "dkp" then  -- [FIX] Ensure numeric comparison
+    if method == "dkp" then  -- Ensure numeric comparison
         c1 = tonumber(c1) or 0
         c2 = tonumber(c2) or 0
+    else  -- string columns (name/class/xy): avoid comparing a missing field
+        c1 = c1 or ""
+        c2 = c2 or ""
     end
-    return (way == "asc") and (c1 < c2) or (c1 > c2)
+    if way == "asc" then
+        return c1 < c2
+    else
+        return c1 > c2
+    end
 end
 
 function ExtractItemName(xy)
