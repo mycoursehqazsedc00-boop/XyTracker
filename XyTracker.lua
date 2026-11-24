@@ -1,12 +1,34 @@
 -- Place at top of file
+local HAS_XP3 = false
+
+function XyTracker_NotifyTaskbar()
+    if HAS_XP3 then
+        pcall(UnitXP, "notify", "taskbarIcon")
+    end
+end
+
 function XyButton_UpdatePosition()
     if XyButtonFrame then
+        local angle = (XyTrackerOptions and XyTrackerOptions.minimapAngle) or 200
+        XyButtonFrame:ClearAllPoints()
         XyButtonFrame:SetPoint(
             "TOPLEFT", "Minimap", "TOPLEFT",
-            54 - (78 * cos(200)),
-            (78 * sin(200)) - 55
+            54 - (78 * cos(angle)),
+            (78 * sin(angle)) - 55
         );
     end
+end
+
+function XyButton_OnDragUpdate()
+    if not Minimap or not XyButtonFrame then return end
+    local mx, my = Minimap:GetCenter()
+    local cx, cy = GetCursorPosition()
+    local scale = UIParent:GetEffectiveScale()
+    cx, cy = cx / scale, cy / scale
+    local angle = math.deg(math.atan2(cy - my, mx - cx))
+    if not XyTrackerOptions then XyTrackerOptions = {} end
+    XyTrackerOptions.minimapAngle = angle
+    XyButton_UpdatePosition()
 end
 
 -- Plugin constants and global variables
@@ -104,18 +126,28 @@ end
 function RollStart()
     rollData    = {}
     isRolling   = true
-    rollEndTime = GetTime() + tonumber(XyTrackerOptions.rollTime);
-    SendChatMessage(curItem .. " roll started, ends in " .. XyTrackerOptions.rollTime .. " seconds", "RAID", this.language, nil)
+    local duration = tonumber(XyTrackerOptions and XyTrackerOptions.rollTime) or 60
+    if duration <= 0 then duration = 60 end
+    rollEndTime = GetTime() + duration
+    local itemLabel = curItem or "Item"
+    SendChatMessage(itemLabel .. " roll started, ends in " .. duration .. " seconds", "RAID", nil, nil)
+    if XyTracker_EnsureOnUpdate then XyTracker_EnsureOnUpdate() end
 end
 
 function RollEnd()
     rollEndTime = GetTime()
     isRolling   = false
-    if getn(rollData) > 0 then
-        SendChatMessage(curItem .. " Winner: " .. rollData[1]["name"] .. " rolled [" .. rollData[1]["roll"] .. "]", "RAID", this.language, nil)
-    else
-        SendChatMessage(curItem .. " No one rolled.", "RAID", this.language, nil)
+    local itemLabel = curItem or "Item"
+    local titleFrame = getglobal("RollMonitorFrameTitle")
+    if titleFrame then
+        titleFrame:SetText("Roll Monitor: " .. itemLabel)
     end
+    if rollData and getn(rollData) > 0 then
+        SendChatMessage(itemLabel .. " Winner: " .. rollData[1]["name"] .. " rolled [" .. rollData[1]["roll"] .. "]", "RAID", nil, nil)
+    else
+        SendChatMessage(itemLabel .. " No one rolled.", "RAID", nil, nil)
+    end
+    XyTracker_NotifyTaskbar()
 end
 
 function RollMonitor_Clear()
@@ -206,8 +238,8 @@ function MarkItemAsCompleted(originalWish, completedItemName)
             if itemName then
                 local cleanName = safeCleanString(itemName)
                 if cleanName == cleanedCompleted or
-                   string.find(cleanName, cleanedCompleted) or
-                   string.find(cleanedCompleted, cleanName) then
+                   string.find(cleanName, cleanedCompleted, 1, true) or
+                   string.find(cleanedCompleted, cleanName, 1, true) then
                     foundMatch = true
                 else
                     table.insert(remainingItems, link)
@@ -228,12 +260,12 @@ function MarkItemAsCompleted(originalWish, completedItemName)
     else
         -- Handle plain [Item1][Item2] format
         if string.find(originalWish, "%[(.-)%]") then
-            for item in string.gmatch(originalWish, "%[(.-)%]") do
+            for item in string.gfind(originalWish, "%[(.-)%]") do
                 if item and item ~= "" then
                     local cleanName = safeCleanString(item)
                     if cleanName == cleanedCompleted or
-                       string.find(cleanName, cleanedCompleted) or
-                       string.find(cleanedCompleted, cleanName) then
+                       string.find(cleanName, cleanedCompleted, 1, true) or
+                       string.find(cleanedCompleted, cleanName, 1, true) then
                         foundMatch = true
                     else
                         table.insert(remainingItems, "[" .. item .. "]")
@@ -271,10 +303,75 @@ end
 --]]
 
 -- Addon initialization
+local function XyTracker_InitDefaults()
+    if not XyTrackerOptions then XyTrackerOptions = {} end
+    if XyTrackerOptions.AutoAnnounce == nil then XyTrackerOptions.AutoAnnounce = false end
+    if XyTrackerOptions.greenModeEnabled == nil then XyTrackerOptions.greenModeEnabled = false end
+    if XyTrackerOptions.blueModeEnabled == nil then XyTrackerOptions.blueModeEnabled = false end
+    if XyTrackerOptions.purpleModeEnabled == nil then XyTrackerOptions.purpleModeEnabled = true end
+    if XyTrackerOptions.XyOnlyMode == nil then XyTrackerOptions.XyOnlyMode = 0 end
+    if XyTrackerOptions.rollTime == nil then XyTrackerOptions.rollTime = 60 end
+    if XyTrackerOptions.autoMinDkp == nil then XyTrackerOptions.autoMinDkp = false end
+    if XyTrackerOptions.autoClearOnLeave == nil then XyTrackerOptions.autoClearOnLeave = true end
+
+    if XyArray == nil then XyArray = {} end
+    if DefaultDKP == nil then DefaultDKP = 4 end
+
+    if XyTrackerOptions.Declaration and XyTrackerOptions.Declaration ~= "" then
+        playerDeclaration = XyTrackerOptions.Declaration
+    elseif XyTrackerDeclaration and XyTrackerDeclaration ~= "" then
+        playerDeclaration = XyTrackerDeclaration
+    else
+        playerDeclaration = " "
+        XyTrackerOptions.Declaration = playerDeclaration
+    end
+end
+
+local pendingListUpdate = false
+local listUpdateElapsed = 0
+
+function XyTracker_EnsureOnUpdate()
+    if XyTrackerFrame and not XyTrackerFrame:GetScript("OnUpdate") then
+        XyTrackerFrame:SetScript("OnUpdate", function()
+            local elapsed = arg1 or 0
+            if isRolling and rollEndTime then
+                local rem = rollEndTime - GetTime()
+                if rem <= 0 then
+                    RollEnd()
+                else
+                    local rFrame = getglobal("RollMonitorFrame")
+                    local rTitle = getglobal("RollMonitorFrameTitle")
+                    if rFrame and rFrame:IsVisible() and rTitle then
+                        rTitle:SetText("Roll Monitor: " .. (curItem or "Item") .. " (" .. math.ceil(rem) .. "s)")
+                    end
+                end
+            end
+            if pendingListUpdate then
+                listUpdateElapsed = listUpdateElapsed + elapsed
+                if listUpdateElapsed >= 0.1 then
+                    pendingListUpdate = false
+                    listUpdateElapsed = 0
+                    XyTracker_UpdateList()
+                end
+            end
+            if not isRolling and not pendingListUpdate then
+                this:SetScript("OnUpdate", nil)
+            end
+        end)
+    end
+end
+
+function XyTracker_ScheduleListUpdate()
+    pendingListUpdate = true
+    listUpdateElapsed = 0
+    XyTracker_EnsureOnUpdate()
+end
+
 function XyTracker_OnLoad()
     LeaderName = ""  -- Initialize SR manager name
 
     this:RegisterEvent("VARIABLES_LOADED")
+    this:RegisterEvent("PLAYER_LOGIN")
 
     -- Add SR/DKP options to the party right-click menu
     if UnitPopupMenus["PARTY"] then
@@ -288,21 +385,6 @@ function XyTracker_OnLoad()
         if not contain("GET_XY",    UnitPopupMenus["RAID"]) then table.insert(UnitPopupMenus["RAID"], "GET_XY")    end
         if not contain("ADD_DKP",   UnitPopupMenus["RAID"]) then table.insert(UnitPopupMenus["RAID"], "ADD_DKP")   end
         if not contain("Minus_DKP", UnitPopupMenus["RAID"]) then table.insert(UnitPopupMenus["RAID"], "Minus_DKP") end
-    end
-
-    -- Load saved declaration
-    if XyTrackerOptions and XyTrackerOptions.Declaration and XyTrackerOptions.Declaration ~= "" then
-        playerDeclaration = XyTrackerOptions.Declaration
-    elseif XyTrackerDeclaration and XyTrackerDeclaration ~= "" then
-        playerDeclaration = XyTrackerDeclaration  -- Fall back to old storage
-    else
-        playerDeclaration = " "
-        if not XyTrackerOptions then XyTrackerOptions = {} end
-        XyTrackerOptions.Declaration = playerDeclaration
-    end
-
-    if playerDeclaration and playerDeclaration ~= "" then
-        DEFAULT_CHAT_FRAME:AddMessage("Declaration content loaded")
     end
 
     -- Slash commands
@@ -319,10 +401,7 @@ function XyTracker_OnLoad()
     this:RegisterEvent("CHAT_MSG_ADDON")
     this:RegisterEvent("CHAT_MSG_WHISPER")
     this:RegisterEvent("CHAT_MSG_LOOT")
-    -- Fires on any raid roster change (join/leave/promote/etc). Unlike the
-    -- CHAT_MSG_SYSTEM strings below, this event is the same regardless of
-    -- client locale, so it reliably catches join/leave on both zhCN and
-    -- enUS clients. See XyTracker_OnRaidRosterUpdate().
+    this:RegisterEvent("LOOT_OPENED")
     this:RegisterEvent("RAID_ROSTER_UPDATE")
     this:RegisterForDrag("LeftButton");
 
@@ -334,40 +413,10 @@ function XyTracker_OnLoad()
     ori_unitpopup1  = UnitPopup_OnClick;
     UnitPopup_OnClick = ple_unitpopup1;
 
-    -- Initialize saved options
-    if not XyTrackerOptions then
-        XyTrackerOptions = {
-            AutoAnnounce     = false,
-            greenModeEnabled = false,
-            blueModeEnabled  = false,
-            purpleModeEnabled = true,   -- Purple enabled by default
-            XyOnlyMode       = 0,
-            rollTime         = 60,
-            autoMinDkp       = false,
-            autoClearOnLeave = true,    -- Auto-clear on leave enabled by default
-        }
-    end
-
-    if XyArray == nil then XyArray = {} end
     XyInProgress = false
     NoXyList     = ""
     Xys          = 0
-    WasInRaid    = GetNumRaidMembers() > 0  -- avoid firing a false join/leave transition on load
-
-    getglobal("autoModeButtons"):SetChecked(XyTrackerOptions.XyOnlyMode);
-    getglobal("autoAnnounceButton"):SetChecked(XyTrackerOptions.AutoAnnounce);
-    XyTracker_UpdateList()
-    SendAddonMessage("XY_SYNC_NEW", "", "RAID")
-
-    -- Load DKP from DB
-    if XyTrackerDB then
-        for name, data in pairs(XyTrackerDB) do
-            local info = getXyInfo(name)
-            if info then
-                info.dkp = tonumber(data.dkp) or DefaultDKP  -- [FIX] Ensure number
-            end
-        end
-    end
+    WasInRaid    = false
 
     -- Register DKP submenus
     if not UnitPopupMenus["ADD_DKP"] then
@@ -376,11 +425,6 @@ function XyTracker_OnLoad()
     if not UnitPopupMenus["Minus_DKP"] then
         UnitPopupMenus["Minus_DKP"] = { "MINUS_DKP_1", "MINUS_DKP_2", "MINUS_DKP_3", "MINUS_DKP_4" };
     end
-
--- Enhanced CML Loot Master integration (disabled)
--- 	if CML_Vars and CML_Vars.Enabled then
--- 		...
--- 	end
 end
 
 function XYT_InitDropDown()
@@ -427,27 +471,25 @@ end
 
 -- Get or create the SR record for a player
 function getXyInfo(name)
+    if not name or name == "" then return nil end
+    local defDkp = DefaultDKP or 4
     local n = getn(XyArray)
     if n > 0 then
         for i = 1, n do
             local info = XyArray[i]
             if info["name"] == name then
-                info["dkp"] = tonumber(info["dkp"]) or DefaultDKP  -- [FIX] Ensure number
+                info["dkp"] = tonumber(info["dkp"]) or defDkp
                 return info
             end
         end
     end
     -- New raid member: create record
     local totalMembers = GetNumRaidMembers()
-    if totalMembers then
+    if totalMembers and totalMembers > 0 then
         for i = 1, totalMembers do
-            -- 6th return value is GetRaidRosterInfo's locale-independent
-            -- class token (e.g. "HUNTER"); the 5th ("class") is localized
-            -- to whichever client is running this code, so we store the
-            -- token instead -- see the note above ClassDisplayName().
             local player, rank, subgroup, level, class, fileName = GetRaidRosterInfo(i);
             if name == player then
-                local info = { name = name, class = fileName or class, xy = "---NOSR---", dkp = DefaultDKP }
+                local info = { name = name, class = fileName or class, xy = "---NOSR---", dkp = defDkp }
                 table.insert(XyArray, info)
                 NoXyList = NoXyList .. name .. " "
                 return info;
@@ -459,13 +501,18 @@ end
 
 -- Update the roll monitor display
 function RollMonitor_UpdateList()
-    FauxScrollFrame_Update(RollListScrollFrame, 10, 10, 25);
-    table.sort(rollData, Xy_CompareRolls);
+    local numRolls = rollData and getn(rollData) or 0
+    FauxScrollFrame_Update(RollListScrollFrame, numRolls, 10, 25);
+    if numRolls > 1 then
+        table.sort(rollData, Xy_CompareRolls);
+    end
+    local offset = FauxScrollFrame_GetOffset(RollListScrollFrame) or 0;
     for i = 1, 10 do
-        if i > getn(rollData) then
+        local k = offset + i
+        if k > numRolls then
             getglobal("RollFrameListButton" .. i):Hide();
         else
-            local v = rollData[i]
+            local v = rollData[k]
             getglobal("RollFrameListButton" .. i .. "Name"):SetText(v["name"]);
             getglobal("RollFrameListButton" .. i .. "Class"):SetText(ClassDisplayName(v["class"]));
             getglobal("RollFrameListButton" .. i .. "Xy"):SetText(v["xy"]);
@@ -477,22 +524,31 @@ function RollMonitor_UpdateList()
 end
 
 function Xy_CompareRolls(a1, a2)
-    return tonumber(a1["roll"]) > tonumber(a2["roll"]);
+    return (tonumber(a1["roll"]) or 0) > (tonumber(a2["roll"]) or 0);
 end
+
+local CLASS_RGB = {
+    WARRIOR = { 0.78, 0.61, 0.43 },
+    SHAMAN  = { 0.15, 0.45, 1.00 },
+    DRUID   = { 1.00, 0.49, 0.04 },
+    ROGUE   = { 1.00, 0.96, 0.41 },
+    MAGE    = { 0.41, 0.80, 0.94 },
+    PALADIN = { 0.96, 0.55, 0.73 },
+    PRIEST  = { 1.00, 1.00, 1.00 },
+    WARLOCK = { 0.58, 0.51, 0.79 },
+    HUNTER  = { 0.67, 0.83, 0.45 },
+}
 
 -- Rebuild and display the SR list
 function XyTracker_UpdateList()
     NoXyList = ""
     Xys      = 0
     local totalMembers       = GetNumRaidMembers()
+    local inRaid             = (totalMembers and totalMembers > 0)
+    local defDkp             = DefaultDKP or 4
     local currentRaidMembers = {}
 
-    if totalMembers then
-        -- Build member lookup table.
-        -- [FIX] GetRaidRosterInfo(i) can transiently return nil for a slot
-        -- while the roster is still settling (common pre-raid, with people
-        -- joining/leaving in quick succession) even though i <= totalMembers.
-        -- Skip those instead of indexing the table with a nil key.
+    if inRaid then
         for i = 1, totalMembers do
             local rname = GetRaidRosterInfo(i)
             if rname then
@@ -505,30 +561,24 @@ function XyTracker_UpdateList()
         for i = 1, getn(XyArray) do nameToIndex[XyArray[i]["name"]] = i end
 
         for i = 1, totalMembers do
-            -- 6th return value ("fileName") is locale-independent (e.g.
-            -- "HUNTER"); the 5th ("class") is localized to whichever
-            -- client is running this code. We always store/refresh the
-            -- token so an English viewer never ends up displaying class
-            -- text that was localized on a Chinese leader's client (or
-            -- vice versa) via the XY_SYNC payload. See ClassDisplayName().
             local name, rank, subgroup, level, class, fileName = GetRaidRosterInfo(i);
 
-            if name then  -- [FIX] same transient-nil-slot guard as above
+            if name then
                 local classToken = fileName or class
                 local info
 
                 if nameToIndex[name] then
                     info = XyArray[nameToIndex[name]]
-                    info["class"] = classToken  -- keep it current / self-heal old contaminated data
+                    info["class"] = classToken
+                    info["dkp"] = tonumber(info["dkp"]) or defDkp
                 else
-                    -- New player, add record
-                    info = { name = name, class = classToken, xy = "---NOSR---", dkp = DefaultDKP }
+                    info = { name = name, class = classToken, xy = "---NOSR---", dkp = defDkp }
                     table.insert(XyArray, info)
                     nameToIndex[name] = getn(XyArray)
                 end
 
                 if info then
-                    if IsLeader and NewDKP then info["dkp"] = DefaultDKP end
+                    if IsLeader and NewDKP then info["dkp"] = defDkp end
                     if info["xy"] and info["xy"] ~= "---NOSR---" and info["xy"] ~= "" then
                         Xys = Xys + 1
                     else
@@ -542,7 +592,7 @@ function XyTracker_UpdateList()
     end
 
     -- Status text
-    if totalMembers then
+    if inRaid then
         XyTrackerFrameStatusText:SetText(
             XyTracker_If(Xys == totalMembers,
                 "All members have SR",
@@ -556,7 +606,7 @@ function XyTracker_UpdateList()
 
     -- Build display array (current raid members only)
     local displayArray = {}
-    if getn(XyArray) > 0 and totalMembers then
+    if getn(XyArray) > 0 and inRaid then
         for i = 1, getn(XyArray) do
             if currentRaidMembers[XyArray[i]["name"]] then
                 table.insert(displayArray, XyArray[i])
@@ -574,8 +624,18 @@ function XyTracker_UpdateList()
                 getglobal("XyFrameListButton" .. i):Hide();
             else
                 local v = displayArray[k]
-                getglobal("XyFrameListButton" .. i .. "Name"):SetText(v["name"]);
-                getglobal("XyFrameListButton" .. i .. "Class"):SetText(ClassDisplayName(v["class"]));
+                local nameFS = getglobal("XyFrameListButton" .. i .. "Name")
+                local classFS = getglobal("XyFrameListButton" .. i .. "Class")
+                nameFS:SetText(v["name"]);
+                classFS:SetText(ClassDisplayName(v["class"]));
+                local rgb = v["class"] and CLASS_RGB[string.upper(v["class"])]
+                if rgb then
+                    nameFS:SetTextColor(rgb[1], rgb[2], rgb[3])
+                    classFS:SetTextColor(rgb[1], rgb[2], rgb[3])
+                else
+                    nameFS:SetTextColor(1, 0.82, 0)
+                    classFS:SetTextColor(1, 1, 1)
+                end
                 getglobal("XyFrameListButton" .. i .. "Xy"):SetText(v["xy"]);
                 getglobal("XyFrameListButton" .. i .. "DKP"):SetText(v["dkp"]);
                 if IsLeader then
@@ -641,13 +701,14 @@ end
 
 function XyTracker_ShowXyWindow()
     if DefaultDKP == nil then DefaultDKP = 4 end
-    getglobal("autoModeButtons"):SetChecked(XyTrackerOptions.XyOnlyMode);
-    getglobal("autoAnnounceButton"):SetChecked(XyTrackerOptions.AutoAnnounce);
-    getglobal("autoMinButtons"):SetChecked(XyTrackerOptions.autoMinDkp);
-    getglobal("greenModeButtons"):SetChecked(XyTrackerOptions.greenModeEnabled);
-    getglobal("blueModeButtons"):SetChecked(XyTrackerOptions.blueModeEnabled);
-    getglobal("purpleModeButtons"):SetChecked(XyTrackerOptions.purpleModeEnabled);
-    getglobal("clearOnLeaveButton"):SetChecked(XyTrackerOptions.autoClearOnLeave);
+    if not XyTrackerOptions then XyTrackerOptions = {} end
+    getglobal("autoModeButtons"):SetChecked((XyTrackerOptions.XyOnlyMode == 1 or XyTrackerOptions.XyOnlyMode == true) and 1 or 0);
+    getglobal("autoAnnounceButton"):SetChecked(XyTrackerOptions.AutoAnnounce and 1 or 0);
+    getglobal("autoMinButtons"):SetChecked(XyTrackerOptions.autoMinDkp and 1 or 0);
+    getglobal("greenModeButtons"):SetChecked(XyTrackerOptions.greenModeEnabled and 1 or 0);
+    getglobal("blueModeButtons"):SetChecked(XyTrackerOptions.blueModeEnabled and 1 or 0);
+    getglobal("purpleModeButtons"):SetChecked(XyTrackerOptions.purpleModeEnabled and 1 or 0);
+    getglobal("clearOnLeaveButton"):SetChecked(XyTrackerOptions.autoClearOnLeave and 1 or 0);
 
     if not playerDeclaration or playerDeclaration == "" then
         playerDeclaration = XyTrackerDeclaration or ""
@@ -670,11 +731,6 @@ function XyTracker_HideXyWindow()
     HideUIPanel(XyTrackerFrame)
 end
 
-function XyButton_UpdatePosition()
-    XyButtonFrame:SetPoint("TOPLEFT", "Minimap", "TOPLEFT",
-        54 - (78 * cos(200)), (78 * sin(200)) - 55);
-end
-
 -- Announce SR info when an item link appears in raid chat (outside SR phase)
 -- [FIX] Previously used `return` inside this loop, which aborted the whole
 -- function the moment ONE item in the message didn't qualify (wrong color,
@@ -682,17 +738,29 @@ end
 -- in the same message, e.g. a leader pasting multiple drops at once. Now
 -- each item link is evaluated independently so the rest still get announced.
 function CheckItemAndAnnounceWish(msg, sender)
-    if not XyTrackerOptions.AutoAnnounce then return end
-    if string.find(msg, "%*%*") then return end
+    if not XyTrackerOptions or not XyTrackerOptions.AutoAnnounce then return end
+    if not msg or string.find(msg, "%*%*") then return end
+    if string.find(msg, "^%s*[xX][yY]%s+") or string.find(msg, "^%s*[xX][yY]|") then return end
 	if not IsLeader then return end
 
-    for itemLink in string.gmatch(msg, "|Hitem:.-|h.-|h") do
+    for itemLink in string.gfind(msg, "|Hitem:.-|h.-|h") do
         local _, _, targetID   = string.find(itemLink, "|Hitem:(%d+):")
         local _, _, targetName = string.find(itemLink, "|h%[(.-)%]|h")
 
         if targetID then
             -- Only announce for purple/orange (and optionally blue/green) items
             local itemName, itemRank, itemQuality = GetItemInfo(targetID)
+            if not itemQuality then
+                local _, _, hex = string.find(itemLink, "^|c(%x+)|H")
+                if hex then
+                    local lc = string.lower(hex)
+                    if     lc == "ff1eff00" then itemQuality = 2
+                    elseif lc == "ff0070dd" then itemQuality = 3
+                    elseif lc == "ffa335ee" then itemQuality = 4
+                    elseif lc == "ffff8000" then itemQuality = 5
+                    end
+                end
+            end
             local shouldAnnounce = false
             if itemQuality == 5 then shouldAnnounce = true end  -- Orange (legendary): always announce
             if itemQuality == 4 and XyTrackerOptions.purpleModeEnabled then shouldAnnounce = true end
@@ -701,15 +769,16 @@ function CheckItemAndAnnounceWish(msg, sender)
 
             if shouldAnnounce then
                 local wishPlayers = {}
+                local defDkp = DefaultDKP or 4
 
                 for i = 1, getn(XyArray) do
                     local info = XyArray[i]
                     local xy   = info["xy"] or ""
                     if xy ~= "---NOSR---" and xy ~= "|cFF00FFFFAll SR Done|r" then
                         -- 用itemID匹配，不依赖名字
-                        for srID in string.gmatch(xy, "|Hitem:(%d+):") do
+                        for srID in string.gfind(xy, "|Hitem:(%d+):") do
                             if srID == targetID then
-                                table.insert(wishPlayers, { name = info["name"], dkp = info["dkp"] })
+                                table.insert(wishPlayers, { name = info["name"], dkp = info["dkp"] or defDkp })
                                 break
                             end
                         end
@@ -738,10 +807,30 @@ end
 
 function XyTracker_OnEvent(event)
     if event == "VARIABLES_LOADED" then
-        -- Declaration edit box starts hidden
+        XyTracker_InitDefaults()
+        getglobal("autoModeButtons"):SetChecked((XyTrackerOptions.XyOnlyMode == 1 or XyTrackerOptions.XyOnlyMode == true) and 1 or 0)
+        getglobal("autoAnnounceButton"):SetChecked(XyTrackerOptions.AutoAnnounce and 1 or 0)
+        getglobal("autoMinButtons"):SetChecked(XyTrackerOptions.autoMinDkp and 1 or 0)
+        getglobal("greenModeButtons"):SetChecked(XyTrackerOptions.greenModeEnabled and 1 or 0)
+        getglobal("blueModeButtons"):SetChecked(XyTrackerOptions.blueModeEnabled and 1 or 0)
+        getglobal("purpleModeButtons"):SetChecked(XyTrackerOptions.purpleModeEnabled and 1 or 0)
+        getglobal("clearOnLeaveButton"):SetChecked(XyTrackerOptions.autoClearOnLeave and 1 or 0)
+        return
     end
 
-    if isRolling and GetTime() > rollEndTime then RollEnd() end
+    if event == "PLAYER_LOGIN" then
+        XyTracker_InitDefaults()
+        HAS_XP3 = pcall(UnitXP, "nop", "nop")
+        XyButton_UpdatePosition()
+        WasInRaid = (GetNumRaidMembers() > 0)
+        XyTracker_UpdateList()
+        if WasInRaid then
+            SendAddonMessage("XY_SYNC_NEW", "", "RAID")
+        end
+        return
+    end
+
+    if isRolling and rollEndTime and GetTime() > rollEndTime then RollEnd() end
 
     if event == "CHAT_MSG_RAID" or event == "CHAT_MSG_RAID_LEADER" then
         -- Track numeric bids (1-4) for auto-deduct
@@ -760,11 +849,23 @@ function XyTracker_OnEvent(event)
         XyTracker_OnSystemMessage()
     end
 
-    -- Auto-deduct DKP when loot is received
-    -- NOTE: The pattern below matches the Chinese locale loot message.
-    -- Update if your server uses a different language.
-    if event == "CHAT_MSG_LOOT" and XyTrackerOptions.autoMinDkp then
-        local _, _, player, itemLink = string.find(arg1, "(.+) receives item: (.+)%.")
+    -- Auto-deduct DKP when loot is received (supports enUS & zhCN/item patterns)
+    if event == "CHAT_MSG_LOOT" and XyTrackerOptions and XyTrackerOptions.autoMinDkp then
+        local player, itemLink
+        local _, _, p1, l1 = string.find(arg1, "(.+) receives loot: (.+)%.")
+        if p1 and l1 then
+            player, itemLink = p1, l1
+        else
+            local _, _, lSelf = string.find(arg1, "You receive loot: (.+)%.")
+            if lSelf then
+                player, itemLink = UnitName("player"), lSelf
+            else
+                local _, _, p2, l2 = string.find(arg1, "(.+) receives item: (.+)%.")
+                if p2 and l2 then
+                    player, itemLink = p2, l2
+                end
+            end
+        end
         if player and itemLink then
             local currentTime   = GetTime()
             local playerMessage = raidMessages[player]
@@ -776,6 +877,7 @@ function XyTracker_OnEvent(event)
                 if   itemColor == "ffa335ee" and XyTrackerOptions.purpleModeEnabled then shouldDeduct = true
                 elseif itemColor == "ff0070dd" and XyTrackerOptions.blueModeEnabled  then shouldDeduct = true
                 elseif itemColor == "ff1eff00" and XyTrackerOptions.greenModeEnabled  then shouldDeduct = true
+                elseif itemColor == "ffff8000" then shouldDeduct = true
                 end
 
                 if shouldDeduct and IsLeader then
@@ -783,16 +885,17 @@ function XyTracker_OnEvent(event)
                     local number = playerMessage.message
 
                     if info then
+                        local curDkp = tonumber(info["dkp"]) or (DefaultDKP or 4)
                         -- Deduct DKP based on bid number
                         if     number == 0 then -- No deduct, just remove item
                         elseif number == 5 then -- No deduct (SR fulfilled at cost)
                         elseif number <= 4 then
-                            info["dkp"] = tonumber(info["dkp"]) - number
-                            SendChatMessage(player .. " -" .. number .. "dkp, remaining: [" .. info["dkp"] .. "]", "RAID", this.language, nil)
+                            info["dkp"] = curDkp - number
+                            SendChatMessage(player .. " -" .. number .. "dkp, remaining: [" .. info["dkp"] .. "]", "RAID", nil, nil)
                         else
                             local deduct = number - 5
-                            info["dkp"]  = tonumber(info["dkp"]) - deduct
-                            SendChatMessage(player .. " -" .. deduct .. "dkp (bid " .. number .. "dkp - 5dkp), remaining: [" .. info["dkp"] .. "]", "RAID", this.language, nil)
+                            info["dkp"]  = curDkp - deduct
+                            SendChatMessage(player .. " -" .. deduct .. "dkp (bid " .. number .. "dkp - 5dkp), remaining: [" .. info["dkp"] .. "]", "RAID", nil, nil)
                         end
 
                         -- Remove obtained item from SR
@@ -824,6 +927,27 @@ function XyTracker_OnEvent(event)
         end
     end
 
+    -- Auto-scan boss loot on LOOT_OPENED when AutoAnnounce is enabled (3s debounce)
+    if event == "LOOT_OPENED" and IsLeader and XyTrackerOptions and XyTrackerOptions.AutoAnnounce then
+        local now = GetTime()
+        if not XyTracker_LastLootScan or (now - XyTracker_LastLootScan) >= 3 then
+            XyTracker_LastLootScan = now
+            local numLoot = GetNumLootItems()
+            if numLoot and numLoot > 0 then
+                local seen = {}
+                for i = 1, numLoot do
+                    if LootSlotIsItem(i) then
+                        local link = GetLootSlotLink(i)
+                        if link and not seen[link] then
+                            seen[link] = true
+                            CheckItemAndAnnounceWish(link, UnitName("player"))
+                        end
+                    end
+                end
+            end
+        end
+    end
+
     -- Announce SR when item links appear in raid chat
     if event == "CHAT_MSG_RAID" or event == "CHAT_MSG_RAID_LEADER" or event == "CHAT_MSG_RAID_WARNING" then
         CheckItemAndAnnounceWish(arg1, arg2)
@@ -839,6 +963,7 @@ function XyTracker_OnEvent(event)
         DisableLeaderOperation()
         LeaderName = arg4
         XyTracker_UpdateLeaderText()
+        XyTracker_NotifyTaskbar()
     end
 
     -- Member requests sync: leader sends data
@@ -881,50 +1006,61 @@ function XyTracker_OnEvent(event)
         end
     end
 
-    -- Roll monitor: capture /roll results while rolling is active
-    if event == "CHAT_MSG_SYSTEM" and isRolling and rollEndTime > GetTime() then
-        local pattern = "(.+)rolled(%d+)（(%d+)-(%d+)）"
-        if string.find(arg1, pattern) then
-            local _, _, player, roll, min_roll, max_roll = string.find(arg1, pattern)
-            if min_roll == "1" and max_roll == "100" then
-                local exis = false
-                for i = 1, getn(rollData) do
-                    if rollData[i]["name"] == player then exis = true end
-                end
-                if not exis then
-                    local xyInfo = getXyInfo(player)
-                    table.insert(rollData, {
-                        name  = player,
-                        roll  = roll,
-                        class = xyInfo["class"],
-                        xy    = xyInfo["xy"],
-                        dkp   = xyInfo["dkp"]
-                    })
-                    RollMonitor_UpdateList()
-                end
+    -- Roll monitor: capture /roll results while rolling is active (enUS & zhCN)
+    if event == "CHAT_MSG_SYSTEM" and isRolling and rollEndTime and rollEndTime > GetTime() then
+        local _, _, player, roll, min_roll, max_roll = string.find(arg1, "(.+) rolls (%d+) %((%d+)-(%d+)%)")
+        if not player then
+            _, _, player, roll, min_roll, max_roll = string.find(arg1, "(.+)rolled(%d+)（(%d+)-(%d+)）")
+        end
+        if player and min_roll == "1" and max_roll == "100" then
+            local exis = false
+            for i = 1, getn(rollData) do
+                if rollData[i]["name"] == player then exis = true; break end
+            end
+            if not exis then
+                local xyInfo = getXyInfo(player)
+                table.insert(rollData, {
+                    name  = player,
+                    roll  = roll,
+                    class = xyInfo and xyInfo["class"] or "",
+                    xy    = xyInfo and xyInfo["xy"] or "---NOSR---",
+                    dkp   = xyInfo and xyInfo["dkp"] or (DefaultDKP or 4)
+                })
+                RollMonitor_UpdateList()
             end
         end
     end
 end
 
--- Parse raid messages and update SR data
-function XyTracker_OnSystemMessage()
-    if not XyInProgress then return end
+local LINK_COLOR_QUALITY = {
+    ["ff1eff00"] = 2,
+    ["ff0070dd"] = 3,
+    ["ffa335ee"] = 4,
+    ["ffff8000"] = 5,
+}
 
-    if arg1 and string.find(arg1, "|Hitem:") then
-        local links = ""
-        for link in string.gmatch(arg1, "|c%x+|Hitem:.-|h%[.-%]|h|r") do
-            local _, _, itemID = string.find(link, "|Hitem:(%d+):")
-            local _, _, itemQuality = GetItemInfo(itemID)
-            if itemQuality and itemQuality >= 3 then
-                links = links .. link
-            end
+-- Parse raid messages and update SR data (admin/leader only, requires XY prefix)
+function XyTracker_OnSystemMessage()
+    if not IsLeader or not XyInProgress then return end
+    if not arg1 or not string.find(arg1, "|Hitem:") then return end
+    if not (string.find(arg1, "^%s*[xX][yY]%s+") or string.find(arg1, "^%s*[xX][yY]|")) then return end
+
+    local links = ""
+    for link in string.gfind(arg1, "|c%x+|Hitem:.-|h%[.-%]|h|r") do
+        local _, _, itemID = string.find(link, "|Hitem:(%d+):")
+        local _, _, itemQuality = GetItemInfo(itemID)
+        if not itemQuality then
+            local _, _, hex = string.find(link, "^|c(%x+)|H")
+            itemQuality = hex and LINK_COLOR_QUALITY[string.lower(hex)] or nil
         end
-        if links ~= "" then
-            XyTracker_OnXy(arg2, links)
-            XyTracker_UpdateList()
-            syncXy()
+        if itemQuality and itemQuality >= 3 then
+            links = links .. link
         end
+    end
+    if links ~= "" then
+        XyTracker_OnXy(arg2, links)
+        XyTracker_UpdateList()
+        syncXy()
     end
 end
 
@@ -932,12 +1068,13 @@ function receiveXySync(msg, sender)
     DisableLeaderOperation()
     LeaderName = sender or ""
     XyTracker_UpdateLeaderText()
+    local defDkp = DefaultDKP or 4
 
     -- Sync header packet
     for n, x in string.gfind(msg, "n=(.+),x=(.+)") do
-        Xys     = x
+        Xys     = tonumber(x) or 0
         XyArray = {}
-        XyTracker_UpdateList()
+        XyTracker_ScheduleListUpdate()
         return
     end
 
@@ -949,7 +1086,7 @@ function receiveXySync(msg, sender)
                 found             = true
                 XyArray[i]["class"] = c
                 XyArray[i]["xy"]    = (x == "---NOSR---") and "" or x
-                XyArray[i]["dkp"]   = tonumber(s) or DefaultDKP  -- [FIX] Ensure number
+                XyArray[i]["dkp"]   = tonumber(s) or defDkp
                 break
             end
         end
@@ -958,23 +1095,47 @@ function receiveXySync(msg, sender)
                 name  = p,
                 class = c,
                 xy    = (x == "---NOSR---") and "" or x,
-                dkp   = tonumber(s) or DefaultDKP  -- [FIX] Ensure number
+                dkp   = tonumber(s) or defDkp
             })
         end
-        XyTracker_UpdateList()
+        if x and x ~= "---NOSR---" and C_Item and C_Item.IsItemDataCachedByID and C_Item.RequestLoadItemDataByID then
+            for itemIDStr in string.gfind(x, "|Hitem:(%d+):") do
+                local itemID = tonumber(itemIDStr)
+                if itemID and not C_Item.IsItemDataCachedByID(itemID) then
+                    C_Item.RequestLoadItemDataByID(itemID)
+                end
+            end
+        end
+        XyTracker_ScheduleListUpdate()
     end
 end
 
 function syncXy()
     local n = getn(XyArray)
     if n > 0 then
-        SendAddonMessage("XY_SYNC", "n=" .. n .. ",x=" .. Xys, "RAID")
+        local defDkp = DefaultDKP or 4
+        SendAddonMessage("XY_SYNC", "n=" .. n .. ",x=" .. (Xys or 0), "RAID")
         for i = 1, n do
             local info  = XyArray[i]
             local xy    = info["xy"]    or "---NOSR---"
-            local dkp   = info["dkp"]   or 4
+            local dkp   = info["dkp"]   or defDkp
             local class = info["class"] or "none"
-            SendAddonMessage("XY_SYNC", "p=" .. info["name"] .. ",c=" .. class .. ",x=" .. xy .. ",s=" .. dkp, "RAID")
+            local prefix = "p=" .. info["name"] .. ",c=" .. class .. ",x="
+            local suffix = ",s=" .. dkp
+            local maxXyLen = 254 - string.len(prefix) - string.len(suffix)
+            if string.len(xy) > maxXyLen and maxXyLen > 0 then
+                -- Trim to last complete item link if possible so SendAddonMessage stays <= 254 bytes
+                local trimmed = ""
+                for link in string.gfind(xy, "|c%x+|Hitem:.-|h%[.-%]|h|r") do
+                    if string.len(trimmed) + string.len(link) <= maxXyLen then
+                        trimmed = trimmed .. link
+                    else
+                        break
+                    end
+                end
+                xy = (trimmed ~= "") and trimmed or string.sub(xy, 1, maxXyLen)
+            end
+            SendAddonMessage("XY_SYNC", prefix .. xy .. suffix, "RAID")
         end
     end
 end
@@ -995,8 +1156,10 @@ end
 function EnableLeaderOperation()
     XyInProgress = false
     getglobal("XyTrackerFrameStartButton"):Show();
+    getglobal("XyTrackerFrameStopButton"):Hide();
     getglobal("XyTrackerFrameResetButton"):Show();
     getglobal("XyTrackerFrameAnnounceButton"):Show();
+    getglobal("XyTrackerFrameBroadcastButton"):Show();
     getglobal("XyTrackerFrameExportButton"):Show();
     getglobal("XyTrackerFrameChuShiHua_DKP"):Show();
     getglobal("XyTrackerFrameDeclarationButton"):Show();
@@ -1025,21 +1188,22 @@ end
 
 function XyTracker_OnXy(name, Xy)
     local info = getXyInfo(name)
+    if not info then return end
     info["xy"] = Xy
 
     if IsLeader then XyTracker_ShowXyWindow() end
 
     -- Alert if multiple players SR the same item
-    if XyTrackerOptions.AutoAnnounce then
-        for itemName in string.gmatch(Xy, "|h%[(.-)%]|h") do
+    if XyTrackerOptions and XyTrackerOptions.AutoAnnounce then
+        for itemName in string.gfind(Xy, "|h%[(.-)%]|h") do
             local count = 0
             for i = 1, getn(XyArray) do
-                for otherItem in string.gmatch(XyArray[i]["xy"] or "", "|h%[(.-)%]|h") do
+                for otherItem in string.gfind(XyArray[i]["xy"] or "", "|h%[(.-)%]|h") do
                     if otherItem == itemName then count = count + 1; break end
                 end
             end
             if count >= 2 then
-                SendChatMessage("*" .. itemName .. "* already has " .. count .. " ppl SR", "RAID", this.language, nil)
+                SendChatMessage("*" .. itemName .. "* already has " .. count .. " ppl SR", "RAID", nil, nil)
             end
         end
     end
@@ -1050,10 +1214,14 @@ function XyTracker_OnStartButtonClick()
         IsLeader   = true
         LeaderName = UnitName("player")
         XyTracker_UpdateLeaderText()
-        SendChatMessage("Welcome to the raid! Say [itemlink] in raid chat to submit your SR", "RAID", this.language, nil);
+        SendChatMessage("Welcome to the raid! Type XY [itemlink] in raid chat to submit your SR", "RAID", nil, nil);
         XyInProgress = true
+        getglobal("XyTrackerFrameStartButton"):Hide()
+        getglobal("XyTrackerFrameStopButton"):Show()
         XyTracker_ShowXyWindow()
         SendAddonMessage("XY_START", "", "RAID")  -- Notify members SR has started
+    else
+        DEFAULT_CHAT_FRAME:AddMessage("XyTracker: You must be in a raid group to start SR.")
     end
 end
 
@@ -1080,12 +1248,14 @@ StaticPopupDialogs["XYTRACKER_CONFIRM_RESET"] = {
 function XyTracker_DoActualClear()
     XyArray    = {}
     XyItemCount = {}  -- Clear SR item counts
+    NoXyList   = ""
+    local defDkp = DefaultDKP or 4
     local totalMembers = GetNumRaidMembers()
-    if totalMembers then
+    if totalMembers and totalMembers > 0 then
         for i = 1, totalMembers do
             local name, rank, subgroup, level, class, fileName = GetRaidRosterInfo(i);
-            if name then  -- [FIX] skip a transiently-nil roster slot instead of inserting a nil-named record
-                info = { name = name, class = fileName or class, dkp = 4, xy = "---NOSR---" }
+            if name then
+                local info = { name = name, class = fileName or class, dkp = defDkp, xy = "---NOSR---" }
                 table.insert(XyArray, info)
                 NoXyList = NoXyList .. name .. " "
             end
@@ -1097,23 +1267,24 @@ end
 
 function XyTracker_OnRefreshButtonClick()
     local totalMembers = GetNumRaidMembers()
-    if totalMembers then
+    local defDkp = DefaultDKP or 4
+    if totalMembers and totalMembers > 0 then
         -- Index existing data by player name
         local existingWishes = {}
         for i = 1, getn(XyArray) do
             local info = XyArray[i]
-            existingWishes[info["name"]] = { index = i, xy = info["xy"], dkp = info["dkp"] or DefaultDKP, class = info["class"] }
+            existingWishes[info["name"]] = { index = i, xy = info["xy"], dkp = info["dkp"] or defDkp, class = info["class"] }
         end
 
         -- Ensure all current raid members have a record
         for i = 1, totalMembers do
             local name, rank, subgroup, level, class, fileName = GetRaidRosterInfo(i)
-            if name then  -- [FIX] skip a transiently-nil roster slot instead of inserting a nil-named record
+            if name then
                 local classToken = fileName or class
                 if existingWishes[name] then
                     XyArray[existingWishes[name].index]["class"] = classToken  -- Update class
                 else
-                    table.insert(XyArray, { name = name, class = classToken, xy = "---NOSR---", dkp = DefaultDKP or 4 })
+                    table.insert(XyArray, { name = name, class = classToken, xy = "---NOSR---", dkp = defDkp })
                 end
             end
         end
@@ -1144,8 +1315,9 @@ if not IsLeader then return end
     local currentLanguage    = this.language
     local totalMembers       = GetNumRaidMembers()
     local currentRaidMembers = {}
+    local defDkp             = DefaultDKP or 4
 
-    if totalMembers then
+    if totalMembers and totalMembers > 0 then
         for i = 1, totalMembers do
             local rname = GetRaidRosterInfo(i)
             if rname then currentRaidMembers[rname] = true end
@@ -1174,9 +1346,9 @@ if not IsLeader then return end
                 this.elapsed = 0;
                 if XyCurrentBroadcastIndex <= getn(XyBroadcastList) then
                     local info = XyBroadcastList[XyCurrentBroadcastIndex]
-                    if info and info["xy"] and info["xy"] ~= "---NOSR---" then
+                    if info and info["xy"] and info["xy"] ~= "---NOSR---" and info["xy"] ~= "" then
                         SendChatMessage(string.format("*SR* %s (%s): %s [%sdkp]",
-                            info["name"], ClassDisplayName(info["class"]), info["xy"], info["dkp"]),
+                            info["name"], ClassDisplayName(info["class"]), info["xy"], tostring(info["dkp"] or defDkp)),
                             "RAID", currentLanguage, nil);
                     end
                     XyCurrentBroadcastIndex = XyCurrentBroadcastIndex + 1;
@@ -1190,7 +1362,7 @@ if not IsLeader then return end
             self:SetScript("OnUpdate", nil); XyBroadcastTimer = nil;
         end;
     else
-        SendChatMessage("You must be in a raid group.", "RAID", currentLanguage, nil);
+        DEFAULT_CHAT_FRAME:AddMessage("XyTracker: You must be in a raid group.");
     end
 end
 
@@ -1198,8 +1370,9 @@ function XyTracker_OnExportButtonClick()
     local totalMembers       = GetNumRaidMembers()
     local currentRaidMembers = {}
     local displayArray       = {}
+    local defDkp             = DefaultDKP or 4
 
-    if totalMembers then
+    if totalMembers and totalMembers > 0 then
         for i = 1, totalMembers do
             local rname = GetRaidRosterInfo(i)
             if rname then currentRaidMembers[rname] = true end
@@ -1215,10 +1388,14 @@ function XyTracker_OnExportButtonClick()
     local csvText = ""
     for i = 1, getn(displayArray) do
         local xy = displayArray[i]["xy"] or ""
-        csvText = csvText .. ClassDisplayName(displayArray[i]["class"]) .. "-" .. displayArray[i]["name"] .. "-" .. xy .. "-remaining:[" .. displayArray[i]["dkp"] .. "]dkp\n"
+        local dkp = displayArray[i]["dkp"] or defDkp
+        csvText = csvText .. ClassDisplayName(displayArray[i]["class"]) .. "-" .. displayArray[i]["name"] .. "-" .. xy .. "-remaining:[" .. dkp .. "]dkp\n"
     end
 
     getglobal("XyExportEdit"):SetText(csvText);
+    if XyExportScrollFrame and XyExportScrollFrame.UpdateScrollChildRect then
+        XyExportScrollFrame:UpdateScrollChildRect();
+    end
     getglobal("XyExportFrame"):Show();
 end
 
@@ -1236,7 +1413,7 @@ function XyAddDkp(player, score)
     if not player or not score then return end
     local info = getXyInfo(player)
     if info then
-        info["dkp"] = tonumber(info["dkp"]) + score
+        info["dkp"] = (tonumber(info["dkp"]) or (DefaultDKP or 4)) + score
         XyTracker_UpdateList(); XyQuery(player, score); syncXy()
     end
 end
@@ -1245,7 +1422,7 @@ function XyMinusDkp(player, score)
     if not player or not score then return end
     local info = getXyInfo(player)
     if info then
-        info["dkp"] = tonumber(info["dkp"]) - score
+        info["dkp"] = (tonumber(info["dkp"]) or (DefaultDKP or 4)) - score
         XyTracker_UpdateList(); XyQuery(player, -score); syncXy()
     end
 end
@@ -1315,7 +1492,7 @@ function XyTracker_RowOnEnter(self)
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 
     local shownFirst = false
-    for hyperlink, itemName in string.gmatch(xy, "|H(item:[%-%d:]+)|h%[(.-)%]|h") do
+    for hyperlink, itemName in string.gfind(xy, "|H(item:[%-%d:]+)|h%[(.-)%]|h") do
         if not shownFirst then
             local _, _, itemID = string.find(hyperlink, "^item:(%d+)")
             itemID = tonumber(itemID)
@@ -1340,6 +1517,64 @@ function XyTracker_RowOnEnter(self)
     if shownFirst then GameTooltip:Show() end
 end
 
+local XyRowContextMenuFrame = CreateFrame("Frame", "XyRowContextMenuFrame", UIParent, "UIDropDownMenuTemplate")
+local XyRowContextMember = nil
+
+local function XyTracker_InitRowMenu()
+    if not XyRowContextMember or XyRowContextMember == "" then return end
+    local member = XyRowContextMember
+
+    UIDropDownMenu_AddButton({ text = member, isTitle = 1, notCheckable = 1 })
+    UIDropDownMenu_AddButton({
+        text = "Query SR to Raid",
+        notCheckable = 1,
+        func = function() XyQuery(member) end
+    })
+    UIDropDownMenu_AddButton({
+        text = "Whisper Remind SR",
+        notCheckable = 1,
+        func = function()
+            SendChatMessage("Please submit your SR in raid chat: XY [itemlink]", "WHISPER", nil, member)
+        end
+    })
+    if IsLeader then
+        UIDropDownMenu_AddButton({
+            text = "+1 DKP",
+            notCheckable = 1,
+            func = function() XyAddDkp(member, 1) end
+        })
+        UIDropDownMenu_AddButton({
+            text = "-1 DKP",
+            notCheckable = 1,
+            func = function() XyMinusDkp(member, 1) end
+        })
+        UIDropDownMenu_AddButton({
+            text = "Clear SR",
+            notCheckable = 1,
+            func = function()
+                local info = getXyInfo(member)
+                if info then
+                    info["xy"] = "---NOSR---"
+                    XyTracker_UpdateList()
+                    syncXy()
+                end
+            end
+        })
+    end
+end
+
+function XyTracker_RowOnClick(self, button)
+    if button ~= "RightButton" then return end
+    local id = self:GetID()
+    local nameFS = getglobal("XyFrameListButton" .. id .. "Name")
+    local member = nameFS and nameFS:GetText()
+    if not member or member == "" then return end
+
+    XyRowContextMember = member
+    UIDropDownMenu_Initialize(XyRowContextMenuFrame, XyTracker_InitRowMenu, "MENU")
+    ToggleDropDownMenu(1, nil, XyRowContextMenuFrame, "cursor", 0, 0)
+end
+
 -- Return SR list string for an item, matched by itemID rather than display
 -- name. Name-based matching (XYLIST1 below) can't tell apart two items that
 -- happen to share a name (recolors, different-tier items with the same
@@ -1349,19 +1584,21 @@ end
 function XYLIST1byID(itemID)
     if XyArray == nil or not itemID then return nil end
     itemID = tostring(itemID)
+    local defDkp = DefaultDKP or 4
     local num = 0; local p = 0; local itemname = ""; local NOW
     for i = 1, getn(XyArray) do
         local info = XyArray[i]
         local xy   = info["xy"] or ""
-        for srID, item_name in string.gmatch(xy, "|Hitem:(%d+):.-|h%[(.-)%]|h") do
+        for srID, item_name in string.gfind(xy, "|Hitem:(%d+):.-|h%[(.-)%]|h") do
             if srID == itemID then
                 num = num + 1
                 local color = ClasstoColor(info["class"])
+                local dkp = info["dkp"] or defDkp
                 if p == 3 then
-                    itemname = itemname .. "\n " .. color .. info["name"] .. "|r(" .. info["dkp"] .. "dkp)"
+                    itemname = itemname .. "\n " .. color .. info["name"] .. "|r(" .. dkp .. "dkp)"
                     p = 0
                 else
-                    itemname = itemname .. " " .. color .. info["name"] .. "|r(" .. info["dkp"] .. "dkp)"
+                    itemname = itemname .. " " .. color .. info["name"] .. "|r(" .. dkp .. "dkp)"
                 end
                 p = p + 1; NOW = item_name
             end
@@ -1376,59 +1613,65 @@ end
 -- AtlasLoot tooltip: show SR players when hovering items
 if AtlasLootTooltip then
     Xytooltip = CreateFrame("Frame", "Xytooltip", AtlasLootTooltip)
-    Xytooltip:SetScript("OnShow", function(self)
+    Xytooltip:SetScript("OnShow", function()
         local namelist
         if AtlasLootTooltip.GetItem then  -- ClassicAPI extension: real itemID, no name collisions
             local _, _, itemID = AtlasLootTooltip:GetItem()
             namelist = itemID and XYLIST1byID(itemID)
         end
         if not namelist then
-            local Itemname = getglobal("AtlasLootTooltipTextLeft1"):GetText()
+            local left1 = getglobal("AtlasLootTooltipTextLeft1")
+            local Itemname = left1 and left1:GetText()
             namelist = Itemname and XYLIST1(Itemname)
         end
-        if namelist then AtlasLootTooltip:AddLine(namelist) end
-        AtlasLootTooltip:Show()
+        if namelist then
+            AtlasLootTooltip:AddLine(namelist)
+            AtlasLootTooltip:Show()
+        end
     end)
-    Xytooltip:SetScript("OnHide", function() AtlasLootTooltip:Hide() end)
 end
 
 -- GameTooltip: show SR players when hovering items in world
 if GameTooltip then
     Xytooltip2 = CreateFrame("Frame", "Xytooltip2", GameTooltip)
-    Xytooltip2:SetScript("OnShow", function(self)
+    Xytooltip2:SetScript("OnShow", function()
         local namelist
         if GameTooltip.GetItem then  -- ClassicAPI extension: real itemID, no name collisions
             local _, _, itemID = GameTooltip:GetItem()
             namelist = itemID and XYLIST1byID(itemID)
         end
         if not namelist then
-            local Itemname = getglobal("GameTooltipTextLeft1"):GetText() or ""
+            local left1 = getglobal("GameTooltipTextLeft1")
+            local Itemname = left1 and left1:GetText()
             -- Try as item name, then as player name
             namelist = Itemname and (XYLIST1(Itemname) or XYLISTbyPlayer(Itemname))
         end
-        if namelist then GameTooltip:AddLine(namelist) end
-        GameTooltip:Show()
+        if namelist then
+            GameTooltip:AddLine(namelist)
+            GameTooltip:Show()
+        end
     end)
-    Xytooltip2:SetScript("OnHide", function() GameTooltip:Hide() end)
 end
 
 -- ItemRefTooltip: show SR players when clicking item links in chat
 if ItemRefTooltip then
     Xytooltip3 = CreateFrame("Frame", "Xytooltip3", ItemRefTooltip)
-    Xytooltip3:SetScript("OnShow", function(self)
+    Xytooltip3:SetScript("OnShow", function()
         local namelist
         if ItemRefTooltip.GetItem then  -- ClassicAPI extension: real itemID, no name collisions
             local _, _, itemID = ItemRefTooltip:GetItem()
             namelist = itemID and XYLIST1byID(itemID)
         end
         if not namelist then
-            local Itemname = getglobal("ItemRefTooltipTextLeft1"):GetText()
+            local left1 = getglobal("ItemRefTooltipTextLeft1")
+            local Itemname = left1 and left1:GetText()
             namelist = Itemname and XYLIST1(Itemname)
         end
-        if namelist then ItemRefTooltip:AddLine(namelist) end
-        ItemRefTooltip:Show()
+        if namelist then
+            ItemRefTooltip:AddLine(namelist)
+            ItemRefTooltip:Show()
+        end
     end)
-    Xytooltip3:SetScript("OnHide", function() ItemRefTooltip:Hide() end)
 end
 
 -- Returns a WoW color code for the given class name.
@@ -1491,20 +1734,22 @@ end
 
 -- Return SR list string for an item (multi-item SR per player)
 function XYLIST1(Iname)
-    if XyArray == nil then return nil end
+    if XyArray == nil or not Iname or Iname == "" then return nil end
+    local defDkp = DefaultDKP or 4
     local num = 0; local p = 0; local itemname = ""; local NOW
     for i = 1, getn(XyArray) do
         local info = XyArray[i]
         local xy   = info["xy"] or ""
-        for item_name in string.gmatch(xy, "|h%[(.-)%]|h") do
+        for item_name in string.gfind(xy, "|h%[(.-)%]|h") do
             if item_name == Iname then
                 num = num + 1
                 local color = ClasstoColor(info["class"])
+                local dkp = info["dkp"] or defDkp
                 if p == 3 then
-                    itemname = itemname .. "\n " .. color .. info["name"] .. "|r(" .. info["dkp"] .. "dkp)"
+                    itemname = itemname .. "\n " .. color .. info["name"] .. "|r(" .. dkp .. "dkp)"
                     p = 0
                 else
-                    itemname = itemname .. " " .. color .. info["name"] .. "|r(" .. info["dkp"] .. "dkp)"
+                    itemname = itemname .. " " .. color .. info["name"] .. "|r(" .. dkp .. "dkp)"
                 end
                 p = p + 1; NOW = item_name
             end
@@ -1517,42 +1762,41 @@ function XYLIST1(Iname)
 end
 
 -- Return SR info string for a player by name (tooltip)
-local playername
 function XYLISTbyPlayer(playername)
-    if XyArray == nil then return nil end
+    if XyArray == nil or not playername or playername == "" then return nil end
     local n = getn(XyArray)
+    local defDkp = DefaultDKP or 4
     local num = 0; local NOW; local dkp; local playxy
-    local itemtable = {}
 
     local _, _, extracted = string.find(playername, " (%S+)")
     playername = extracted or playername
 
     for i = 1, n do
         if XyArray[i]["name"] == playername then
-            local _, _, extracted2 = string.find(XyArray[i]["xy"], "|h%[(.-)%]|h")
-            playxy = extracted2 or XyArray[i]["xy"]
-            NOW    = XyArray[i]["xy"]
-            dkp    = XyArray[i]["dkp"]
+            local rawXy = XyArray[i]["xy"] or ""
+            if rawXy == "" or rawXy == "---NOSR---" then return nil end
+            local _, _, extracted2 = string.find(rawXy, "|h%[(.-)%]|h")
+            playxy = extracted2 or rawXy
+            NOW    = rawXy
+            dkp    = XyArray[i]["dkp"] or defDkp
             break
         end
     end
 
+    if not NOW or NOW == "" or NOW == "---NOSR---" then return nil end
+
     for i = 1, n do
-        local xy     = XyArray[i]["xy"] or ""
-        local _, _, xy_name = string.find(xy, "|h%[(.-)%]|h|r")
-        xy_name = xy_name or xy
-        if xy_name then
-            if xy_name == playxy then
+        local xy = XyArray[i]["xy"] or ""
+        if xy ~= "" and xy ~= "---NOSR---" then
+            local _, _, xy_name = string.find(xy, "|h%[(.-)%]|h")
+            xy_name = xy_name or xy
+            if xy_name and xy_name == playxy then
                 num = num + 1
             end
-            itemtable[xy_name] = (itemtable[xy_name] or 0) + 1
         end
     end
 
-    if NOW and NOW ~= "" then
-        return " SR: " .. NOW .. " (" .. dkp .. "dkp)\n   |cff9FFFA0--(" .. num .. ") ppl SR--|r"
-    end
-    return nil
+    return " SR: " .. NOW .. " (" .. dkp .. "dkp)\n   |cff9FFFA0--(" .. num .. ") ppl SR--|r"
 end
 
 -- Update the SR manager name display at the bottom of the frame

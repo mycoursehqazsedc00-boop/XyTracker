@@ -232,6 +232,12 @@
             </Button>
         </Frames>
         <Scripts>
+            <OnLoad>
+                this:RegisterForClicks("LeftButtonUp", "RightButtonUp");
+            </OnLoad>
+            <OnClick>
+                XyTracker_RowOnClick(this, arg1);
+            </OnClick>
             <!-- Hovering the row shows a real tooltip for the SR'd item(s) instead of plain text -->
             <OnEnter>
                 XyTracker_RowOnEnter(this)
@@ -680,28 +686,31 @@
                     <OnClick>getglobal("XyExportFrame"):Hide();</OnClick>
                 </Scripts>
             </Button>
-           <EditBox name="XyExportEdit" multiLine="true" autofocus="false">
+            <ScrollFrame name="XyExportScrollFrame" inherits="UIPanelScrollFrameTemplate">
                 <Size>
-                    <AbsDimension x="480" y="480" />
+                    <AbsDimension x="460" y="660" />
                 </Size>
                 <Anchors>
                     <Anchor point="TOPLEFT" relativeTo="$parent" relativePoint="TOPLEFT">
                         <Offset>
-                            <AbsDimension x="10" y="-10" />
+                            <AbsDimension x="12" y="-24" />
                         </Offset>
                     </Anchor>
                 </Anchors>
-                <Layers>
-                    <!-- 移除背景和边框，只显示文字 -->
-                </Layers>
-                <Backdrop>
-                    <BackgroundInsets>
-                        <AbsInset bottom="0" left="0" right="0" top="0" />
-                    </BackgroundInsets>
-                </Backdrop>
-                <FontString inherits="GameFontNormal" />
-                <Scripts />
-            </EditBox>
+                <ScrollChild>
+                    <EditBox name="XyExportEdit" multiLine="true" autoFocus="false">
+                        <Size>
+                            <AbsDimension x="445" y="660" />
+                        </Size>
+                        <FontString inherits="GameFontNormal" />
+                        <Scripts>
+                            <OnEscapePressed>
+                                this:ClearFocus();
+                            </OnEscapePressed>
+                        </Scripts>
+                    </EditBox>
+                </ScrollChild>
+            </ScrollFrame>
         </Frames>
         <Scripts>
             <OnMouseDown>if arg1 == "LeftButton" then this:StartMoving(); end</OnMouseDown>
@@ -736,12 +745,24 @@
                 <PushedTexture file="Interface\AddOns\XyTracker\Images\logo-down.tga"/>
                 <HighlightTexture alphaMode="ADD" file="Interface\Minimap\UI-Minimap-ZoomButton-Highlight"/>
                 <Scripts>
+                    <OnLoad>
+                        this:RegisterForDrag("RightButton");
+                    </OnLoad>
+                    <OnDragStart>
+                        this:SetScript("OnUpdate", XyButton_OnDragUpdate);
+                    </OnDragStart>
+                    <OnDragStop>
+                        this:SetScript("OnUpdate", nil);
+                    </OnDragStop>
                     <OnClick>
 						XyTracker_ShowXyWindow();
                     </OnClick>
                     <OnEnter>
 						GameTooltip_SetDefaultAnchor(GameTooltip, UIParent);
-						GameTooltip:SetText("Toggle SR Tracker");
+						GameTooltip:SetText("SR Tracker");
+						GameTooltip:AddLine("Left-Click: Toggle window", 1, 1, 1);
+						GameTooltip:AddLine("Right-Drag: Move minimap button", 0.8, 0.8, 0.8);
+						GameTooltip:Show();
                     </OnEnter>
                     <OnLeave>
 						GameTooltip:Hide();
@@ -763,10 +784,11 @@
             <AbsDimension x="500" y="650"/>
         </Size>
         <Anchors>
-            <Anchor point="CENTER"/>
-            <Offset>
-                <AbsDimension x="0" y="100"/>
-            </Offset>
+            <Anchor point="CENTER">
+                <Offset>
+                    <AbsDimension x="0" y="100"/>
+                </Offset>
+            </Anchor>
         </Anchors>
         <Backdrop name="$parentBackdrop" bgFile="Interface\Tooltips\UI-Tooltip-Background" edgeFile="Interface\Tooltips\UI-Tooltip-Border" tile="true">
             <EdgeSize>
@@ -781,14 +803,14 @@
         </Backdrop>
         <Layers>
             <Layer level="BACKGROUND">
-                <FontString name="$parentTitle" inherits="GameFontNormal" text="SR Tracker 3.0" justifyH="LEFT" justifyV="TOP">
+                <FontString name="$parentTitle" inherits="GameFontNormal" text="SR Tracker 3.1" justifyH="LEFT" justifyV="TOP">
                     <Anchors>
                         <Anchor point="TOPLEFT">
                             <Offset>
                                 <AbsDimension x="10" y="-10"/>
                             </Offset>
                         </Anchor>
-                        <Anchor point="BOTTOMRIGHT" Point="TOPRIGHT">
+                        <Anchor point="BOTTOMRIGHT" relativePoint="TOPRIGHT">
                             <Offset>
                                 <AbsDimension x="-10" y="-30"/>
                             </Offset>
@@ -813,7 +835,7 @@
                     <Anchors>
                         <Anchor point="BOTTOMLEFT">
                             <Offset>
-                                <AbsDimension x="10" y="55"/>
+                                <AbsDimension x="10" y="76"/>
                             </Offset>
                         </Anchor>
                     </Anchors>
@@ -934,8 +956,6 @@
                 <Scripts>
                     <OnClick>
                         XyTracker_OnStartButtonClick()
-                        getglobal("XyTrackerFrameStartButton"):Hide();
-                        getglobal("XyTrackerFrameStopButton"):Show();
                     </OnClick>
                 </Scripts>
             </Button>
@@ -1031,7 +1051,7 @@
 
 
 
-            <CheckButton name="autoModeButtons" inherits="OptionsCheckButtonTemplate" virtual="true">
+            <CheckButton name="autoModeButtons" inherits="OptionsCheckButtonTemplate">
                 <HitRectInsets>
                     <AbsInset left="0" right="0" top="0" bottom="0"/>
                 </HitRectInsets>
@@ -1052,7 +1072,7 @@
                 </Scripts>
             </CheckButton>
 
-            <CheckButton name="autoAnnounceButton" inherits="OptionsCheckButtonTemplate" virtual="true">
+            <CheckButton name="autoAnnounceButton" inherits="OptionsCheckButtonTemplate">
                 <HitRectInsets>
                     <AbsInset left="0" right="0" top="0" bottom="0"/>
                 </HitRectInsets>
@@ -1072,7 +1092,7 @@
                     </OnClick>
                 </Scripts>
             </CheckButton>
-			<CheckButton name="autoMinButtons" inherits="OptionsCheckButtonTemplate" virtual="true">
+			<CheckButton name="autoMinButtons" inherits="OptionsCheckButtonTemplate">
                 <HitRectInsets>
                     <AbsInset left="0" right="0" top="0" bottom="0"/>
                 </HitRectInsets>
@@ -1093,7 +1113,7 @@
                 </Scripts>
             </CheckButton>
             <!-- Auto-clear on leave checkbox -->
-            <CheckButton name="clearOnLeaveButton" inherits="OptionsCheckButtonTemplate" virtual="true">
+            <CheckButton name="clearOnLeaveButton" inherits="OptionsCheckButtonTemplate">
                 <HitRectInsets>
                     <AbsInset left="0" right="0" top="0" bottom="0"/>
                 </HitRectInsets>
@@ -1113,7 +1133,7 @@
                     </OnClick>
                 </Scripts>
             </CheckButton>
-            <CheckButton name="greenModeButtons" inherits="OptionsCheckButtonTemplate" virtual="true">
+            <CheckButton name="greenModeButtons" inherits="OptionsCheckButtonTemplate">
                 <HitRectInsets>
                     <AbsInset left="0" right="0" top="0" bottom="0"/>
                 </HitRectInsets>
@@ -1133,7 +1153,7 @@
                     </OnClick>
                 </Scripts>
             </CheckButton>
-            <CheckButton name="blueModeButtons" inherits="OptionsCheckButtonTemplate" virtual="true">
+            <CheckButton name="blueModeButtons" inherits="OptionsCheckButtonTemplate">
                 <HitRectInsets>
                     <AbsInset left="0" right="0" top="0" bottom="0"/>
                 </HitRectInsets>
@@ -1153,7 +1173,7 @@
                     </OnClick>
                 </Scripts>
             </CheckButton>
-            <CheckButton name="purpleModeButtons" inherits="OptionsCheckButtonTemplate" virtual="true">
+            <CheckButton name="purpleModeButtons" inherits="OptionsCheckButtonTemplate">
                 <HitRectInsets>
                     <AbsInset left="0" right="0" top="0" bottom="0"/>
                 </HitRectInsets>
@@ -1881,9 +1901,6 @@
                     <OnEscapePressed>
                         getglobal("XyTrackerDeclarationFrame"):Hide()
                     </OnEscapePressed>
-                    <OnEnterPressed>
-                        XyTracker_SaveDeclaration()
-                    </OnEnterPressed>
                 </Scripts>
             </EditBox>			
           
