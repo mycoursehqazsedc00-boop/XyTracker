@@ -24,7 +24,7 @@ cleanly to stock WoW 1.12 behavior when absent:
 
 ## Features
 
-- **Admin `XY [itemlink]` parsing & member sync-only:** When you are the active SR manager (`IsLeader`), raid-chat SR submissions require the `XY ` prefix (case-insensitive) and fall back to link-color quality detection if the item isn't cached yet. Non-admin members do not parse chat and stay synced automatically to the leader's list.
+- **Admin `XY [itemlink]` parsing & member sync-only:** When you are the active SR manager (`IsLeader`), raid-chat SR submissions require the `XY ` prefix (case-insensitive) and fall back to link-color quality detection if the item isn't cached yet, or plain-text `[Item]` fallback when a player types `XY myItem` without an item link. Non-admin members do not parse chat and stay synced automatically to the leader's list.
 - **Auto-scan boss loot (`LOOT_OPENED`):** When `Auto-announce` is enabled, opening a boss/chest loot window automatically checks qualifying items and announces who SR'd them (with a 3s debounce).
 - **Class-colored SR list & Right-Click row menu:** Member names and classes are colored by class. Right-clicking any row opens a quick menu (`Query SR to Raid`, `Whisper Remind SR`, plus `+1 DKP`, `-1 DKP`, and `Clear SR` for the leader).
 - **DKP tracking & Auto-Deduct:** Per-member DKP with `+`/`-` buttons, configurable default DKP (`Init DKP`), bid tracking (`1`-`4` in raid chat), and automatic DKP deduction on loot (supports both enUS and zhCN loot messages).

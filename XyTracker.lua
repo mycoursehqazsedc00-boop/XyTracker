@@ -775,12 +775,29 @@ function CheckItemAndAnnounceWish(msg, sender)
                     local info = XyArray[i]
                     local xy   = info["xy"] or ""
                     if xy ~= "---NOSR---" and xy ~= "|cFF00FFFFAll SR Done|r" then
-                        -- 用itemID匹配，不依赖名字
+                        local matched = false
+                        -- Match by itemID first
                         for srID in string.gfind(xy, "|Hitem:(%d+):") do
                             if srID == targetID then
-                                table.insert(wishPlayers, { name = info["name"], dkp = info["dkp"] or defDkp })
+                                matched = true
                                 break
                             end
+                        end
+                        -- Fallback: match plain-text [Item] SRs by name when no item link is stored
+                        if not matched and targetName and not string.find(xy, "|Hitem:") then
+                            local cleanTarget = safeCleanString(targetName)
+                            for plainName in string.gfind(xy, "%[(.-)%]") do
+                                local cleanPlain = safeCleanString(plainName)
+                                if cleanPlain ~= "" and (cleanPlain == cleanTarget or
+                                   string.find(cleanTarget, cleanPlain, 1, true) or
+                                   string.find(cleanPlain, cleanTarget, 1, true)) then
+                                    matched = true
+                                    break
+                                end
+                            end
+                        end
+                        if matched then
+                            table.insert(wishPlayers, { name = info["name"], dkp = info["dkp"] or defDkp })
                         end
                     end
                 end
@@ -1042,19 +1059,38 @@ local LINK_COLOR_QUALITY = {
 -- Parse raid messages and update SR data (admin/leader only, requires XY prefix)
 function XyTracker_OnSystemMessage()
     if not IsLeader or not XyInProgress then return end
-    if not arg1 or not string.find(arg1, "|Hitem:") then return end
-    if not (string.find(arg1, "^%s*[xX][yY]%s+") or string.find(arg1, "^%s*[xX][yY]|")) then return end
+    if not arg1 then return end
+
+    local _, xyEnd = string.find(arg1, "^%s*[xX][yY]%s+")
+    if not xyEnd then
+        local _, xyPipeEnd = string.find(arg1, "^%s*[xX][yY]|")
+        if not xyPipeEnd then return end
+        xyEnd = xyPipeEnd - 1
+    end
 
     local links = ""
-    for link in string.gfind(arg1, "|c%x+|Hitem:.-|h%[.-%]|h|r") do
-        local _, _, itemID = string.find(link, "|Hitem:(%d+):")
-        local _, _, itemQuality = GetItemInfo(itemID)
-        if not itemQuality then
-            local _, _, hex = string.find(link, "^|c(%x+)|H")
-            itemQuality = hex and LINK_COLOR_QUALITY[string.lower(hex)] or nil
+    if string.find(arg1, "|Hitem:") then
+        for link in string.gfind(arg1, "|c%x+|Hitem:.-|h%[.-%]|h|r") do
+            local _, _, itemID = string.find(link, "|Hitem:(%d+):")
+            local _, _, itemQuality = GetItemInfo(itemID)
+            if not itemQuality then
+                local _, _, hex = string.find(link, "^|c(%x+)|H")
+                itemQuality = hex and LINK_COLOR_QUALITY[string.lower(hex)] or nil
+            end
+            if itemQuality and itemQuality >= 3 then
+                links = links .. link
+            end
         end
-        if itemQuality and itemQuality >= 3 then
-            links = links .. link
+    else
+        -- Plain-text fallback: e.g. "XY myItem" or "XY [myItem]"
+        local rawText = string.sub(arg1, xyEnd + 1)
+        rawText = string.gsub(rawText, "^%s*(.-)%s*$", "%1")
+        if rawText ~= "" then
+            if string.find(rawText, "^%[.*%]$") then
+                links = rawText
+            else
+                links = "[" .. rawText .. "]"
+            end
         end
     end
     if links ~= "" then
@@ -1514,7 +1550,12 @@ function XyTracker_RowOnEnter(self)
         end
     end
 
-    if shownFirst then GameTooltip:Show() end
+    if shownFirst then
+        GameTooltip:Show()
+    elseif string.find(xy, "%[(.-)%]") then
+        GameTooltip:SetText("SR (Text): " .. xy, 1, 1, 1)
+        GameTooltip:Show()
+    end
 end
 
 local XyRowContextMenuFrame = CreateFrame("Frame", "XyRowContextMenuFrame", UIParent, "UIDropDownMenuTemplate")
@@ -1740,18 +1781,37 @@ function XYLIST1(Iname)
     for i = 1, getn(XyArray) do
         local info = XyArray[i]
         local xy   = info["xy"] or ""
-        for item_name in string.gfind(xy, "|h%[(.-)%]|h") do
-            if item_name == Iname then
-                num = num + 1
-                local color = ClasstoColor(info["class"])
-                local dkp = info["dkp"] or defDkp
-                if p == 3 then
-                    itemname = itemname .. "\n " .. color .. info["name"] .. "|r(" .. dkp .. "dkp)"
-                    p = 0
-                else
-                    itemname = itemname .. " " .. color .. info["name"] .. "|r(" .. dkp .. "dkp)"
+        if string.find(xy, "|Hitem:") then
+            for item_name in string.gfind(xy, "|h%[(.-)%]|h") do
+                if item_name == Iname then
+                    num = num + 1
+                    local color = ClasstoColor(info["class"])
+                    local dkp = info["dkp"] or defDkp
+                    if p == 3 then
+                        itemname = itemname .. "\n " .. color .. info["name"] .. "|r(" .. dkp .. "dkp)"
+                        p = 0
+                    else
+                        itemname = itemname .. " " .. color .. info["name"] .. "|r(" .. dkp .. "dkp)"
+                    end
+                    p = p + 1; NOW = item_name
                 end
-                p = p + 1; NOW = item_name
+            end
+        else
+            local cleanIname = safeCleanString(Iname)
+            for item_name in string.gfind(xy, "%[(.-)%]") do
+                local cleanPlain = safeCleanString(item_name)
+                if cleanPlain ~= "" and (item_name == Iname or cleanPlain == cleanIname) then
+                    num = num + 1
+                    local color = ClasstoColor(info["class"])
+                    local dkp = info["dkp"] or defDkp
+                    if p == 3 then
+                        itemname = itemname .. "\n " .. color .. info["name"] .. "|r(" .. dkp .. "dkp)"
+                        p = 0
+                    else
+                        itemname = itemname .. " " .. color .. info["name"] .. "|r(" .. dkp .. "dkp)"
+                    end
+                    p = p + 1; NOW = Iname
+                end
             end
         end
     end
